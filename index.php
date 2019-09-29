@@ -2,8 +2,7 @@
 <html>
 <body>
 <?php
-echo "Hello World\n";
-echo "update-app";
+echo "Hello World new-app";
 ?>
 </body>
 </html>
