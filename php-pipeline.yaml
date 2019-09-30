@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: Template
+labels:
+  template: pipeline-php
+message: |-
+  A Jenkins server must be instantiated in this project to manage
+  the Pipeline BuildConfig created by this template. You will be able to log in to
+  it using your OpenShift user credentials.
+metadata:
+  annotations:
+    openshift.io/display-name: Pipeline php Build
+    description: |-
+      This is pipeline template for s2i php
+    iconClass: icon-php
+  name: php-jenkins-pipeline
+parameters:
+- description: The name
+  displayName: Name
+  name: NAME
+  required: true
+  value: pipeline-php
+- description: The exposed hostname that will route to the application
+  displayName: Application Hostname
+  name: APPLICATION_DOMAIN
+- description: The OpenShift Namespace where the ImageStream resides.
+  displayName: Namespace
+  name: NAMESPACE
+  required: true
+- description: Version of PHP image to be used (5.6, 7.0, 7.1 or latest).
+  displayName: PHP Version
+  name: PHP_VERSION
+  required: true
+  value: "7.1"
+- description: The URL of the repository with your application source code.
+  displayName: Git Repository URL
+  name: SOURCE_REPOSITORY_URL
+  required: true
+  value: https://github.com/kdh8733/cjkx.git
+- description: Set this to a branch name, tag or other ref of your repository if you are not using the default branch.
+  displayName: Git Reference
+  name: SOURCE_REPOSITORY_REF
+- description: Set this to the relative path to your project if it is not in the root
+    of your repository.
+  displayName: Context Directory
+  name: CONTEXT_DIR
+#- description: GitLab trigger secret.  A difficult to guess string encoded as part of the webhook URL.  Not encrypted.
+#  displayName: GitLab Webhook Secret
+#  from: '[a-zA-Z0-9]{40}'
+#  generate: expression
+#  name: GITLAB_WEBHOOK_SECRET
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      name: jenkins-pipeline-php
+    name: jenkins-pipeline-php
+  spec:
+   strategy:
+     jenkinsPipelineStrategy:
+       jenkinsfile: |-
+         try {
+            timeout(time: 20, unit: 'MINUTES') {
+               node {
+                   stage('build') {
+                     openshift.withCluster() {
+                        openshift.withProject() {
+                           def bld = openshift.startBuild('${NAME}')
+                           bld.untilEach {
+                             return it.object().status.phase == "Running"
+                           }
+                           bld.logs('-f')
+                        }
+                     }
+                   }
+                   stage('deploy') {
+                     openshift.withCluster() {
+                       openshift.withProject() {
+                         def dc = openshift.selector('dc', '${NAME}')
+                       }
+                     }
+                   }
+                 }
+            }
+         } catch (err) {
+            echo "in catch block"
+            echo "Caught: ${err}"
+            currentBuild.result = 'FAILURE'
+            throw err
+         }
+     type: JenkinsPipeline
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: Exposes and load balances the application pods
+    name: ${NAME}
+  spec:
+    ports:
+    - name: web
+      port: 8080
+      targetPort: 8080
+    selector:
+      name: ${NAME}
+- apiVersion: v1
+  kind: Route
+  metadata:
+    name: ${NAME}
+  spec:
+    host: ${APPLICATION_DOMAIN}
+    to:
+      kind: Service
+      name: ${NAME}
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    annotations:
+      description: Keeps track of changes in the application image
+    name: ${NAME}
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Defines how to build the application
+    name: ${NAME}
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: ${NAME}:latest
+    postCommit: {}
+    source:
+      contextDir: ${CONTEXT_DIR}
+      git:
+        ref: ${SOURCE_REPOSITORY_REF}
+        uri: ${SOURCE_REPOSITORY_URL}
+      type: Git
+    strategy:
+      sourceStrategy:
+        env:
+        - name: COMPOSER_MIRROR
+          value: ${COMPOSER_MIRROR}
+        from:
+          kind: ImageStreamTag
+          name: php:${PHP_VERSION}
+          namespace: openshift
+      type: Source
+    triggers:
+    - type: ImageChange
+    - type: ConfigChange
+#    - gitlab:
+#        secret: ${GITLAB_WEBHOOK_SECRET}
+#      type: "GitLab"
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: ${NAME}
+  spec:
+    serviceAccountName: admin
+    replicas: 1
+    template:
+      metadata:
+        labels:
+          app: php
+          name: ${NAME}
+      spec:
+        containers:
+        - name: ${NAME}
+          imagePullPolicy: IfNotPresent
+          image: ${NAME}:latest
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        from:
+          kind: ImageStreamTag
+          name: ${NAME}:latest
+          namespace: ${NAMESPACE}
+        containerNames:
+          - ${NAME}
